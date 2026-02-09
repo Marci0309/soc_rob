@@ -1,10 +1,18 @@
 import speech_recognition as sr
 
+LISTEN_TIMEOUT = 8
+PHRASE_TIME_LIMIT = 12
+PAUSE_THRESHOLD = 1.2
+
 
 def listen_from_mic(recognizer, microphone):
     with microphone as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        audio = recognizer.listen(source, timeout=6, phrase_time_limit=6)
+        audio = recognizer.listen(
+            source,
+            timeout=LISTEN_TIMEOUT,
+            phrase_time_limit=PHRASE_TIME_LIMIT,
+        )
     return recognizer.recognize_google(audio)
 
 
@@ -22,7 +30,9 @@ def try_listen_from_mic(recognizer, microphone):
 
 
 def build_recognizer():
-    return sr.Recognizer()
+    recognizer = sr.Recognizer()
+    recognizer.pause_threshold = PAUSE_THRESHOLD
+    return recognizer
 
 
 def build_microphone():

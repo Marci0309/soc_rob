@@ -15,7 +15,7 @@ from gestures import (
     play_wrong_guess,
 )
 from stt import build_microphone, build_recognizer, try_listen_from_mic
-from tts import say_text, speak_with_gestures
+from tts import say_text, say_text_with_prompt_gesture, speak_with_gestures
 
 TARGET_WORDS = [
     "football",
@@ -68,20 +68,56 @@ def get_robot_description(target_word):
 
 
 def wants_more_hint(text):
-    normalized = text.lower().strip()
+    normalized = normalize_text(text).lower().strip()
     if not normalized:
         return False
     yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "more", "hint"}
     return any(word in normalized for word in yes_words)
 
 
+def wants_no_hint(text):
+    normalized = normalize_text(text).lower().strip()
+    if not normalized:
+        return False
+    no_words = {"no", "nope", "nah", "stop", "quit", "enough", "exit"}
+    return any(word in normalized for word in no_words)
+
+
+def normalize_text(text):
+    if isinstance(text, (list, tuple)):
+        if not text:
+            return ""
+        text = text[-1]
+    if text is None:
+        return ""
+    return str(text)
+
+
 def parse_role_choice(text):
-    normalized = text.lower().strip()
-    if "director" in normalized:
+    normalized = normalize_text(text).lower().strip()
+    if "director" in normalized or "direct" in normalized or "leader" in normalized:
         return "director"
-    if "matcher" in normalized or "guesser" in normalized:
+    if "matcher" in normalized or "match" in normalized:
+        return "matcher"
+    if "guesser" in normalized or "guess" in normalized:
         return "matcher"
     return None
+
+
+def parse_replay_choice(text):
+    normalized = normalize_text(text).lower().strip()
+    if not normalized:
+        return None
+    if wants_no_hint(normalized):
+        return "stop"
+    role = parse_role_choice(normalized)
+    if role:
+        return role
+    return None
+
+
+def listen_text(recognizer, microphone):
+    return normalize_text(try_listen_from_mic(recognizer, microphone))
 
 
 def get_robot_guess(user_description):
@@ -120,110 +156,178 @@ def main(session, details):
     recognizer = build_recognizer()
     microphone = build_microphone()
 
-    role_choice = None
-    while role_choice is None:
-        yield say_text(session, "Do you want to be the director or the matcher?")
-        role_reply = try_listen_from_mic(recognizer, microphone)
-        role_choice = parse_role_choice(role_reply)
-        if role_choice is None:
-            yield say_text(session, "I did not hear you. Please say director or matcher.")
-
-    # If human is director, robot is matcher
-    if role_choice == "director":
-        yield session.call("rom.optional.behavior.play", name="BlocklyStand")
-        yield say_text(
-            session,
-            "Okay, you are the director. I am the matcher.",
-        )
-        target_word = input("Enter the target word for the robot to guess: ").strip()
-        if not target_word:
-            target_word = "football"
-        attempts = 0
-        hint_requests = 0
-        guessed = False
-        while not guessed and attempts < 3:
-            yield say_text(session, "Please describe the word.")
-            description = try_listen_from_mic(recognizer, microphone)
-            if not description:
-                yield say_text(session, "I did not hear a description. Please try again.")
-                yield play_no_hear(session)
-                continue
-            guess, confidence = get_robot_guess(description)
-            if confidence < 0.55 and hint_requests < 3:
-                hint_requests += 1
-                yield say_text(
-                    session,
-                    "I am not sure. Can you give me another hint?",
-                )
-                continue
-            yield say_text(session, f"My guess is {guess}.")
-            if target_word.lower() == guess.lower():
-                guessed = True
-                yield say_text(session, "Yes! I guessed it!")
-                yield play_correct_guess(session)
-            else:
-                attempts += 1
-                if attempts < 3:
-                    yield play_wrong_guess(session)
-                    yield say_text(session, "I will try again. Give me another hint.")
-        if not guessed:
-            yield say_text(session, "Good game! I will get it next time.")
-        session.leave()
-        return
-
-    # Human is matcher, robot is director
-    global LAST_WORD
-    choices = [word for word in TARGET_WORDS if word != LAST_WORD]
-    if not choices:
-        choices = TARGET_WORDS[:]
-    target_word = random.choice(choices)
-    LAST_WORD = target_word
-    script = get_robot_description(target_word)
-
-    print(f"Target Word: {target_word}")
-
-    # 3. Robot Actions
-    yield session.call("rom.optional.behavior.play", name="BlocklyStand")
+    yield session.call("rom.optional.behavior.play", name="BlocklyWaveRightArm")
     yield say_text(
         session,
-        "Let's play WOW. I will describe a word with other words. Try to guess it.",
+        "Hi! My name is Alpha. Let's play WOW.",
     )
-    yield speak_with_gestures(session, script, GESTURE_MAP)
 
-    # Optional extra hints
-    max_hints = 2
-    hints_given = 0
-    while hints_given < max_hints:
-        yield say_text(session, "Do you want another hint?")
-        reply = try_listen_from_mic(recognizer, microphone)
-        if not wants_more_hint(reply):
-            break
-        hints_given += 1
-        script = get_robot_description(target_word)
-        yield speak_with_gestures(session, script, GESTURE_MAP)
+    role_choice = None
+    while True:
+        while role_choice is None:
+            yield say_text_with_prompt_gesture(
+                session,
+                "Do you want to play as a director or a guesser?",
+            )
+            role_reply = listen_text(recognizer, microphone)
+            if wants_no_hint(role_reply):
+                yield say_text(session, "Okay, thanks for playing.")
+                session.leave()
+                return
+            role_choice = parse_role_choice(role_reply)
+            if role_choice is None:
+                yield say_text_with_prompt_gesture(
+                    session,
+                    "Please say director or guesser.",
+                )
 
-    yield say_text(session, "What word am I describing?")
-
-    guessed = False
-    attempts = 0
-    while not guessed and attempts < 3:
-        guess = try_listen_from_mic(recognizer, microphone)
-        if not guess:
-            yield say_text(session, "I did not hear you. Please say it again.")
-            yield play_no_hear(session)
-            continue
-        if target_word.lower() in guess.lower():
-            guessed = True
-            yield say_text(session, "Correct! Woohoo!")
-            yield play_correct_guess(session)
+        # If human is director, robot is matcher
+        if role_choice == "director":
+            yield session.call("rom.optional.behavior.play", name="BlocklyStand")
+            yield say_text(
+                session,
+                "Okay, you are the director. I am the matcher.",
+            )
+            yield say_text_with_prompt_gesture(
+                session,
+                "Type the target word in the terminal.",
+            )
+            print("Enter the target word for the robot to guess: ", end="", flush=True)
+            target_word = input().strip()
+            if not target_word:
+                target_word = "football"
+            attempts = 0
+            hint_requests = 0
+            guessed = False
+            while not guessed and attempts < 3:
+                yield say_text_with_prompt_gesture(session, "Please describe the word.")
+                description = listen_text(recognizer, microphone)
+                if not description:
+                    yield say_text_with_prompt_gesture(
+                        session,
+                        "I did not hear you. Please try again.",
+                    )
+                    yield play_no_hear(session)
+                    continue
+                guess, confidence = get_robot_guess(description)
+                if confidence < 0.55 and hint_requests < 3:
+                    hint_requests += 1
+                    yield say_text_with_prompt_gesture(
+                        session,
+                        "I am not sure. Can you give another hint?",
+                    )
+                    continue
+                yield say_text(session, f"My guess is {guess}.")
+                if target_word.lower() == guess.lower():
+                    guessed = True
+                    yield say_text(session, "Yes! I guessed it!")
+                    yield play_correct_guess(session)
+                else:
+                    attempts += 1
+                    if attempts < 3:
+                        yield play_wrong_guess(session)
+                        yield say_text_with_prompt_gesture(
+                            session,
+                            "I will try again. Give me another hint.",
+                        )
+            if not guessed:
+                yield say_text(session, "Good game! I will get it next time.")
         else:
-            attempts += 1
-            if attempts < 3:
-                yield play_wrong_guess(session)
-                yield say_text(session, "Nope, try again.")
+            # Human is matcher, robot is director
+            global LAST_WORD
+            choices = [word for word in TARGET_WORDS if word != LAST_WORD]
+            if not choices:
+                choices = TARGET_WORDS[:]
+            target_word = random.choice(choices)
+            LAST_WORD = target_word
+            script = get_robot_description(target_word)
 
-    if not guessed:
-        yield say_text(session, f"Good try. The word was {target_word}.")
+            print(f"Target Word: {target_word}")
+
+            # 3. Robot Actions
+            yield session.call("rom.optional.behavior.play", name="BlocklyStand")
+            yield say_text(
+                session,
+                "Let's play WOW. I will describe a word with other words. "
+                "Try to guess it.",
+            )
+            yield speak_with_gestures(session, script, GESTURE_MAP)
+
+            # Optional extra hints
+            max_hints = 3
+            hints_given = 0
+            while hints_given < max_hints:
+                yield say_text_with_prompt_gesture(
+                    session,
+                    "Do you want another hint?",
+                )
+                reply = listen_text(recognizer, microphone)
+                if not reply:
+                    yield say_text_with_prompt_gesture(
+                        session,
+                        "Please say yes or no.",
+                    )
+                    yield play_no_hear(session)
+                    continue
+                if wants_no_hint(reply):
+                    break
+                if not wants_more_hint(reply):
+                    yield say_text_with_prompt_gesture(session, "Please say yes or no.")
+                    continue
+                hints_given += 1
+                script = get_robot_description(target_word)
+                yield speak_with_gestures(session, script, GESTURE_MAP)
+
+            yield say_text_with_prompt_gesture(
+                session,
+                "What word am I describing?",
+            )
+
+            guessed = False
+            attempts = 0
+            while not guessed and attempts < 3:
+                guess = listen_text(recognizer, microphone)
+                if not guess:
+                    yield say_text_with_prompt_gesture(
+                        session,
+                        "I did not hear you. Please say it again.",
+                    )
+                    yield play_no_hear(session)
+                    continue
+                if target_word.lower() in guess.lower():
+                    guessed = True
+                    yield say_text(session, "Correct! Woohoo!")
+                    yield play_correct_guess(session)
+                else:
+                    attempts += 1
+                    if attempts < 3:
+                        yield play_wrong_guess(session)
+                        yield say_text(session, "Nope, try again.")
+
+            if not guessed:
+                yield say_text(
+                    session,
+                    f"Good try. The word was {target_word}.",
+                )
+
+        replay_choice = None
+        while replay_choice is None:
+            yield say_text_with_prompt_gesture(
+                session,
+                "Play again as director, matcher, or stop?",
+            )
+            replay_reply = listen_text(recognizer, microphone)
+            replay_choice = parse_replay_choice(replay_reply)
+            if replay_choice is None:
+                yield say_text_with_prompt_gesture(
+                    session,
+                    "Please say director, matcher, or stop.",
+                )
+                yield play_no_hear(session)
+        if replay_choice == "stop":
+            yield say_text(session, "Thanks for playing!")
+            break
+        role_choice = replay_choice
 
     session.leave()
 
@@ -236,7 +340,7 @@ wamp = Component(
             "max_retries": 0,
         }
     ],
-    realm="rie.69846c5e8e17491bb13c9ab2",
+    realm="rie.6989affd946951d690d126f9",
 )
 wamp.on_join(main)
 

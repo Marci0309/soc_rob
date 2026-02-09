@@ -73,13 +73,17 @@ def resolve_behavior(name, fallback_key=None):
 
 
 @inlineCallbacks
-def play_behavior(session, name, fallback_key=None):
+def play_behavior(session, name, fallback_key=None, sync=True):
     if _available_behaviors is None:
         yield init_gestures(session)
     resolved = resolve_behavior(name, fallback_key=fallback_key)
     try:
         print(f"[GESTURE] {resolved}")
-        yield session.call("rom.optional.behavior.play", name=resolved)
+        yield session.call(
+            "rom.optional.behavior.play",
+            name=resolved,
+            sync=sync,
+        )
     except Exception as exc:
         print(f"[GESTURE] Failed to play {resolved}: {exc}")
 
@@ -90,6 +94,16 @@ def play_idle(session):
         session,
         random.choice(IDLE_GESTURES),
         fallback_key="WAVE",
+    )
+
+
+@inlineCallbacks
+def play_idle_async(session):
+    yield play_behavior(
+        session,
+        random.choice(IDLE_GESTURES),
+        fallback_key="WAVE",
+        sync=False,
     )
 
 
