@@ -1,39 +1,57 @@
-import speech_recognition as sr
+from alpha_mini_rug.speech_to_text import SpeechToText
+from autobahn.twisted.util import sleep
+from twisted.internet.defer import inlineCallbacks
 
-LISTEN_TIMEOUT = 8
-PHRASE_TIME_LIMIT = 12
-PAUSE_THRESHOLD = 1.2
+HEARING_SENSITIVITY = 1400
+SILENCE_TIME = 2.5  # Increased to allow longer pauses between words
+SILENCE_THRESHOLD = 600
 
 
-def listen_from_mic(recognizer, microphone):
-    with microphone as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        audio = recognizer.listen(
-            source,
-            timeout=LISTEN_TIMEOUT,
-            phrase_time_limit=PHRASE_TIME_LIMIT,
+class RobotSTT:
+    def __init__(self):
+        self.audio = SpeechToText()
+        # Manual suggests tuning this value (100-500 typical).
+        # We use a higher threshold to ignore ambient fan/noise.
+        self.audio.silence_time = SILENCE_TIME
+        self.audio.silence_threshold2 = SILENCE_THRESHOLD
+        self.audio.logging = False
+        self.audio.do_speech_recognition = True
+        print(
+            "[STT] Robot microphone initialized "
+            f"(silence_time={SILENCE_TIME}, threshold={SILENCE_THRESHOLD})"
         )
-    return recognizer.recognize_google(audio)
 
 
-def try_listen_from_mic(recognizer, microphone):
-    try:
-        text = listen_from_mic(recognizer, microphone)
-        print(f"[STT] Mic heard: {text}")
-        return text
-    except sr.UnknownValueError:
-        print("[STT] Mic heard: (unintelligible)")
-        return ""
-    except (sr.RequestError, sr.WaitTimeoutError):
-        print("[STT] Mic heard: (no speech / timeout)")
-        return ""
+@inlineCallbacks
+def start_robot_mic(session, robot_stt):
+    yield session.call("rom.sensor.hearing.sensitivity", HEARING_SENSITIVITY)
+    yield session.call("rie.dialogue.config.language", lang="en")
+    # Only one subscriber as recommended in the manual
+    yield session.subscribe(robot_stt.audio.listen_continues, "rom.sensor.hearing.stream")
+    yield session.call("rom.sensor.hearing.stream")
+    print(f"[STT] Hearing stream started (sensitivity={HEARING_SENSITIVITY})")
 
 
-def build_recognizer():
-    recognizer = sr.Recognizer()
-    recognizer.pause_threshold = PAUSE_THRESHOLD
-    return recognizer
+@inlineCallbacks
+def stop_robot_mic(session):
+    yield session.call("rom.sensor.hearing.close")
 
 
-def build_microphone():
-    return sr.Microphone()
+@inlineCallbacks
+def listen_from_robot(session, robot_stt, timeout_seconds=12):
+    robot_stt.audio.words = []
+    waited = 0.0
+    while True:
+        if not robot_stt.audio.new_words:
+            robot_stt.audio.loop()
+            yield sleep(0.5)
+            waited += 0.5
+            if waited >= timeout_seconds:
+                print("[STT] Robot mic heard: (timeout)")
+                return ""
+            continue
+        words = robot_stt.audio.give_me_words()
+        if words:
+            text = words[-1]
+            print(f"[STT] Robot mic heard: {text}")
+            return text
