@@ -39,7 +39,17 @@ def stop_robot_mic(session):
 
 @inlineCallbacks
 def listen_from_robot(session, robot_stt, timeout_seconds=12):
+    # Clear buffer to prevent hearing robot's own voice
     robot_stt.audio.words = []
+    robot_stt.audio.new_words = False
+    
+    # Small delay to let robot finish speaking completely
+    yield sleep(0.5)
+    
+    # Clear again after delay
+    robot_stt.audio.words = []
+    robot_stt.audio.new_words = False
+    
     waited = 0.0
     while True:
         if not robot_stt.audio.new_words:

@@ -2,7 +2,6 @@ import random
 import re
 
 from autobahn.twisted.util import sleep
-from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 
 from gestures import play_gesture, play_idle
@@ -31,19 +30,18 @@ def say_text(session, text, gesture=None):
         yield session.call("rie.dialogue.say", text=text)
     except Exception as exc:
         print(f"[TTS] Failed to speak: {exc}")
-    # Small pause between spoken lines for smoother pacing
-    yield sleep(0.3)
+    # Shorter pause for faster conversation flow
+    yield sleep(0.1)
 
 
 @inlineCallbacks
 def say_text_with_prompt_gesture(session, text):
-    # Run gesture fully before speaking to avoid interruption.
-    yield play_idle(session)
+    # Just speak without random gestures
     yield say_text(session, text)
 
 
 @inlineCallbacks
-def speak_with_gestures(session, script, gesture_map, idle_chance=0.4):
+def speak_with_gestures(session, script, gesture_map):
     normalized = " ".join(script.replace("\n", " ").split())
     parts = re.split(r'(\[[A-Z_]+\])', normalized)
     for part in parts:
@@ -55,7 +53,7 @@ def speak_with_gestures(session, script, gesture_map, idle_chance=0.4):
             key = re.sub(r"[^A-Z_]", "", key)
             if key in gesture_map:
                 yield play_gesture(session, gesture_map[key])
-                yield sleep(0.5)
+                yield sleep(0.3)
         else:
             clean_part = re.sub(r"\[[^\]]*\]", " ", part)
             clean_part = " ".join(clean_part.split())
@@ -72,8 +70,11 @@ def speak_with_gestures(session, script, gesture_map, idle_chance=0.4):
                 yield session.call("rie.dialogue.say", text=clean_part)
             except Exception as exc:
                 print(f"[TTS] Failed to speak: {exc}")
-            if random.random() < idle_chance:
+            
+            # Occasionally add subtle idle gestures (20% chance)
+            if random.random() < 0.2:
                 yield play_idle(session)
-            # Shorter pause between sentences for smoother flow
-            pause = min(1.2, max(0.2, len(part) * 0.04))
+            
+            # Much shorter pause between sentences
+            pause = min(0.5, max(0.1, len(part) * 0.02))
             yield sleep(pause)

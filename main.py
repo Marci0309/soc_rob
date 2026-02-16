@@ -203,7 +203,7 @@ def main(session, details):
             yield play_stand(session)
             yield say_text(
                 session,
-                "Okay, you are the director. I am the matcher.",
+                "Okay, you are the director. I am the guesser.",
                 gesture="NOD"
             )
             yield say_text_with_prompt_gesture(
@@ -330,14 +330,14 @@ def main(session, details):
         while replay_choice is None:
             yield say_text_with_prompt_gesture(
                 session,
-                "Play again as director, matcher, or stop?",
+                "Play again as director, guesser, or stop?",
             )
             replay_reply = yield listen_text(session, robot_stt)
             replay_choice = parse_replay_choice(replay_reply)
             if replay_choice is None:
                 yield say_text(
                     session,
-                    "Please say director, matcher, or stop.",
+                    "Please say director, guesser, or stop.",
                     gesture="TILT_HEAD"
                 )
         if replay_choice == "stop":
@@ -357,7 +357,7 @@ wamp = Component(
             "max_retries": 0,
         }
     ],
-    realm="rie.698d8d00946951d690d13adf",
+    realm="rie.6992eb2fe14c6bd0843c5ff2",
 )
 wamp.on_join(main)
 

@@ -1,5 +1,6 @@
 import random
 
+from alpha_mini_rug import perform_movement
 from twisted.internet.defer import inlineCallbacks
 
 GESTURE_MAP = {
@@ -306,25 +307,16 @@ MOTION_FRAMES = {
 
 
 @inlineCallbacks
-def perform_movement(session, frames):
-    try:
-        yield session.call(
-            "rom.actuator.motor.write",
-            frames=frames,
-            force=True,
-        )
-    except Exception as exc:
-        print(f"[GESTURE] motor.write failed: {exc}")
-
-
-@inlineCallbacks
 def play_gesture(session, key):
     if key not in MOTION_FRAMES:
         print(f"[GESTURE] Unknown gesture: {key}")
         return
     frames = MOTION_FRAMES[key]()
     print(f"[GESTURE] {key} ({len(frames)} frames)")
-    yield perform_movement(session, frames)
+    try:
+        yield perform_movement(session, frames)
+    except Exception as exc:
+        print(f"[GESTURE] perform_movement failed: {exc}")
 
 
 @inlineCallbacks
