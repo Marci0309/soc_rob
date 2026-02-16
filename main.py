@@ -55,21 +55,29 @@ def configure_genai():
     genai.configure(api_key=api_key)
 
 
-def get_robot_description(target_word):
+def get_robot_description(target_word, previous_descriptions=None):
+    """Generate a description of target_word. If previous_descriptions is given, give a NEW hint that does not repeat them."""
     model = genai.GenerativeModel("gemini-2.5-flash")
     available_actions = ", ".join([f"[{k}]" for k in GESTURE_MAP.keys()])
     prompt = (
         "You are a social robot playing a guessing game.\n"
         f'Target word: "{target_word}".\n'
-        "1. Describe it without saying the word.\n"
+    )
+    if previous_descriptions:
+        prompt += (
+            "You already said these hints (do NOT repeat or rephrase them):\n"
+            + "\n".join(f"- {d}" for d in previous_descriptions)
+            + "\nGive ONE new, different hint. "
+        )
+    else:
+        prompt += "1. Describe it without saying the word.\n"
+    prompt += (
         f"2. Use gesture tags like {available_actions}.\n"
         "3. Keep it very short.\n"
     )
     response = model.generate_content(prompt)
     text = response.text.strip()
-    # Remove markdown code blocks if present
     text = text.replace("```", "")
-    # Normalize whitespace
     text = text.replace("\n", " ")
     text = " ".join(text.split())
     return text
@@ -79,8 +87,9 @@ def wants_more_hint(text):
     normalized = normalize_text(text).lower().strip()
     if not normalized:
         return False
-    yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "more", "hint"}
-    return any(word in normalized for word in yes_words)
+    yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "more", "hint", "another"}
+    words = set(normalized.split())
+    return any(w in yes_words for w in words)
 
 
 def wants_no_hint(text):
@@ -88,7 +97,18 @@ def wants_no_hint(text):
     if not normalized:
         return False
     no_words = {"no", "nope", "nah", "stop", "quit", "enough", "exit"}
-    return any(word in normalized for word in no_words)
+    words = set(normalized.split())
+    return any(w in no_words for w in words)
+
+
+def wants_to_stop(text):
+    """True if user said stop/quit/exit (whole words) — exit the game from anywhere."""
+    normalized = normalize_text(text).lower().strip()
+    if not normalized:
+        return False
+    stop_words = {"stop", "quit", "exit", "leave", "end"}
+    words = set(normalized.split())
+    return any(w in stop_words for w in words)
 
 
 def normalize_text(text):
@@ -129,17 +149,29 @@ def parse_replay_choice(text):
 
 
 @inlineCallbacks
-def listen_text(session, robot_stt):
-    text = yield listen_from_robot(session, robot_stt)
+def goodbye_and_leave(session):
+    yield say_text(session, "Okay, thanks for playing.", gesture="WAVE")
+    yield stop_robot_mic(session)
+    session.leave()
+
+
+@inlineCallbacks
+def listen_text(session, robot_stt, ignore_phrases=None):
+    """Listen for user speech. ignore_phrases: list of strings we just said (TTS) to ignore if mic picks them up."""
+    text = yield listen_from_robot(session, robot_stt, ignore_phrases=ignore_phrases)
     return normalize_text(text)
 
 
-def get_robot_guess(user_description):
+def get_robot_guess(descriptions):
+    """Guess the word from one or more descriptions. descriptions can be a string or a list of strings (all hints so far)."""
     model = genai.GenerativeModel("gemini-2.5-flash")
+    if isinstance(descriptions, str):
+        descriptions = [descriptions]
+    combined = " | ".join(descriptions) if descriptions else ""
     prompt = (
         "You are the matcher in a guessing game.\n"
-        "Guess the single word that best matches this description:\n"
-        f'"{user_description}".\n'
+        "The director gave these hints (use ALL of them together to guess):\n"
+        f'"{combined}".\n'
         "Respond in JSON with keys: guess (string), confidence (0 to 1)."
     )
     response = model.generate_content(prompt)
@@ -180,15 +212,14 @@ def main(session, details):
     role_choice = None
     while True:
         while role_choice is None:
-            yield say_text_with_prompt_gesture(
-                session,
-                "Do you want to play as a director or a guesser?",
+            prompt = "Do you want to play as a director or a guesser?"
+            yield say_text_with_prompt_gesture(session, prompt)
+            role_reply = yield listen_text(
+                session, robot_stt,
+                ignore_phrases=[prompt, "Please say director or guesser."],
             )
-            role_reply = yield listen_text(session, robot_stt)
-            if wants_no_hint(role_reply):
-                yield say_text(session, "Okay, thanks for playing.", gesture="WAVE")
-                yield stop_robot_mic(session)
-                session.leave()
+            if wants_to_stop(role_reply) or wants_no_hint(role_reply):
+                yield goodbye_and_leave(session)
                 return
             role_choice = parse_role_choice(role_reply)
             if role_choice is None:
@@ -217,9 +248,14 @@ def main(session, details):
             attempts = 0
             hint_requests = 0
             guessed = False
+            director_descriptions = []  # Remember all hints the director said
             while not guessed and attempts < 3:
-                yield say_text_with_prompt_gesture(session, "Please describe the word.")
-                description = yield listen_text(session, robot_stt)
+                prompt = "Please describe the word."
+                yield say_text_with_prompt_gesture(session, prompt)
+                description = yield listen_text(session, robot_stt, ignore_phrases=[prompt])
+                if wants_to_stop(description):
+                    yield goodbye_and_leave(session)
+                    return
                 if not description:
                     yield say_text(
                         session,
@@ -227,7 +263,8 @@ def main(session, details):
                         gesture="TOUCH_HEAD"
                     )
                     continue
-                guess, confidence = get_robot_guess(description)
+                director_descriptions.append(description)
+                guess, confidence = get_robot_guess(director_descriptions)
                 if confidence < 0.55 and hint_requests < 3:
                     hint_requests += 1
                     yield say_text(
@@ -258,7 +295,9 @@ def main(session, details):
                 choices = TARGET_WORDS[:]
             target_word = random.choice(choices)
             LAST_WORD = target_word
+            robot_descriptions = []  # Remember what we already said for extra hints
             script = get_robot_description(target_word)
+            robot_descriptions.append(script)
 
             print(f"Target Word: {target_word}")
 
@@ -275,11 +314,15 @@ def main(session, details):
             max_hints = 3
             hints_given = 0
             while hints_given < max_hints:
-                yield say_text_with_prompt_gesture(
-                    session,
-                    "Do you want another hint?",
+                hint_prompt = "Do you want another hint?"
+                yield say_text_with_prompt_gesture(session, hint_prompt)
+                reply = yield listen_text(
+                    session, robot_stt,
+                    ignore_phrases=[hint_prompt, "Please say yes or no."],
                 )
-                reply = yield listen_text(session, robot_stt)
+                if wants_to_stop(reply):
+                    yield goodbye_and_leave(session)
+                    return
                 if not reply:
                     yield say_text_with_prompt_gesture(
                         session,
@@ -293,18 +336,23 @@ def main(session, details):
                     yield say_text_with_prompt_gesture(session, "Please say yes or no.")
                     continue
                 hints_given += 1
-                script = get_robot_description(target_word)
+                script = get_robot_description(target_word, previous_descriptions=robot_descriptions)
+                robot_descriptions.append(script)
                 yield speak_with_gestures(session, script, GESTURE_MAP)
 
-            yield say_text_with_prompt_gesture(
-                session,
-                "What word am I describing?",
-            )
+            guess_prompt = "What word am I describing?"
+            yield say_text_with_prompt_gesture(session, guess_prompt)
 
             guessed = False
             attempts = 0
             while not guessed and attempts < 3:
-                guess = yield listen_text(session, robot_stt)
+                guess = yield listen_text(
+                    session, robot_stt,
+                    ignore_phrases=[guess_prompt, "Nope, try again.", "I did not hear you. Please say it again."],
+                )
+                if wants_to_stop(guess):
+                    yield goodbye_and_leave(session)
+                    return
                 if not guess:
                     yield say_text(
                         session,
@@ -328,11 +376,15 @@ def main(session, details):
 
         replay_choice = None
         while replay_choice is None:
-            yield say_text_with_prompt_gesture(
-                session,
-                "Play again as director, guesser, or stop?",
+            replay_prompt = "Play again as director, guesser, or stop?"
+            yield say_text_with_prompt_gesture(session, replay_prompt)
+            replay_reply = yield listen_text(
+                session, robot_stt,
+                ignore_phrases=[replay_prompt, "Please say director, guesser, or stop."],
             )
-            replay_reply = yield listen_text(session, robot_stt)
+            if wants_to_stop(replay_reply):
+                yield goodbye_and_leave(session)
+                return
             replay_choice = parse_replay_choice(replay_reply)
             if replay_choice is None:
                 yield say_text(
